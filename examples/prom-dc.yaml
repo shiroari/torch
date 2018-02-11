@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: List
+items:
+
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    labels:
+      app: prometheus
+    name: prometheus
+    namespace: default
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: prometheus
+    template:
+      metadata:
+        labels:
+          app: prometheus
+        name: prometheus
+      spec:
+        serviceAccountName: prometheus
+        containers:
+        - name: prometheus
+          image: "prom/prometheus:v2.1.0"
+          imagePullPolicy: IfNotPresent
+          args:
+          - --config.file=/etc/prometheus/prometheus.yml
+          - --web.enable-lifecycle
+          - --web.enable-admin-api
+          ports:
+          - containerPort: 9090
+            name: web
+          volumeMounts:
+          - mountPath: /etc/prometheus
+            name: config-volume
+          - mountPath: /prometheus
+            name: data-volume
+          - mountPath: /etc/prometheus-rules
+            name: rules-volume
+          - mountPath: /etc/prometheus-custom-rules
+            name: custom-rules-volume
+        - name: torch
+          image: "torch:latest"
+          imagePullPolicy: IfNotPresent
+          args:
+          - --config.file=/etc/prometheus/prometheus.yml
+          - --output=/etc/prometheus-custom-rules
+          - --reload-url=http://localhost:9090/-/reload
+          - --log.level=debug
+          volumeMounts:
+          - mountPath: /etc/prometheus
+            name: config-volume
+          - mountPath: /etc/prometheus-custom-rules
+            name: custom-rules-volume
+        volumes:
+        - name: config-volume
+          configMap:
+            name: prometheus
+        - name: rules-volume
+          configMap:
+            name: prometheus-rules
+        - name: custom-rules-volume
+          emptyDir: {}
+        - name: data-volume
+          emptyDir: {}
+
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: prometheus
+    namespace: default
+  data:
+    prometheus.yml: |
+      rule_files:
+        - "/etc/prometheus-rules/*.yaml"
+        - "/etc/prometheus-custom-rules/*.yaml"
+
+      scrape_configs:
+      - job_name: 'kubernetes-service-endpoints'
+
+        kubernetes_sd_configs:
+        - role: endpoints
+
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+          action: replace
+          target_label: __scheme__
+          regex: (https?)
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+          action: replace
+          target_label: __address__
+          regex: (.+)(?::\d+);(\d+)
+          replacement: $1:$2
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          action: replace
+          target_label: kubernetes_name
+
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: prometheus-rules
+    namespace: default
+  data:
+    node-alerts.yaml: |-
+      groups:
+      - name: node.rules
+        rules:
+        - alert: NodeInstanceDown
+          expr: up{job="kubernetes-nodes"} == 0
+          for: 5s
+          annotations:
+            summary: "Node is down"

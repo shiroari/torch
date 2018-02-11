@@ -1,0 +1,8 @@
+groups:
+- name: test.rules
+  rules:
+  - alert: JustTest
+    expr: up{job="kubernetes-nodes"} == 0
+    for: 5s
+    annotations:
+      summary: "Node is down"
